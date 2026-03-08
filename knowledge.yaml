@@ -1,0 +1,89 @@
+global:
+  node_name: "pve"
+  check_interval: 15
+  bridge_internal: "vmbr1"
+  bridge_external: "vmbr0"
+  gateway: "192.168.100.1"
+  nameserver: "8.8.8.8"
+  next_vmid: 200
+
+ip_pool:
+  service_range:
+    start: 10
+    end: 49
+  scaling_range:
+    start: 50
+    end: 99
+  quarantine_range:
+    start: 200
+    end: 254
+  allocated: {}
+
+templates:
+  wordpress:
+    file: "local:vztmpl/turnkey-wordpress-18.0-bookworm-amd64.tar.gz"
+    memory: 512
+    cores: 1
+    disk: "local-lvm:4"
+    health_check:
+      type: "http"
+      port: 80
+      path: "/"
+      expected_status: 200
+  nginx:
+    file: "local:vztmpl/turnkey-nginx-18.0-bookworm-amd64.tar.gz"
+    memory: 256
+    cores: 1
+    disk: "local-lvm:2"
+    health_check:
+      type: "http"
+      port: 80
+      path: "/"
+      expected_status: 200
+  mysql:
+    file: "local:vztmpl/turnkey-mysql-18.0-bookworm-amd64.tar.gz"
+    memory: 512
+    cores: 1
+    disk: "local-lvm:4"
+    health_check:
+      type: "tcp"
+      port: 3306
+
+desired_state:
+  services:
+    - name: "wp-main"
+      template: "wordpress"
+      vmid: 101
+      ip: "192.168.100.10"
+      must_be_running: true
+      port_forwarding:
+        host_port: 8080
+        container_port: 80
+        protocol: "tcp"
+
+thresholds:
+  self_optimization:
+    cpu_scale_out: 80
+    cpu_scale_in: 20
+    sustained_cycles: 3
+    max_replicas: 3
+  self_healing:
+    max_restart_attempts: 3
+    health_check_timeout: 5
+    restart_cooldown: 30
+  self_protection:
+    max_cpu_spike: 95
+    max_connections: 500
+    max_restart_failures: 5
+    quarantine_duration: 300
+
+port_forwarding_next_port: 8081
+
+active_port_forwarding: []
+
+runtime_state:
+  scaling_replicas: {}
+  restart_counters: {}
+  quarantined: {}
+  sustained_counters: {}
+  last_restart_times: {}
