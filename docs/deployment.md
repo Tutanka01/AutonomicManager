@@ -133,7 +133,7 @@ cd /opt/autonomic-manager
 cp -r /path/to/project/* /opt/autonomic-manager/
 
 # Option B : depuis Git
-git clone https://votre-depot.git /opt/autonomic-manager
+git clone https://github.com/Tutanka01/AutonomicManager /opt/autonomic-manager
 
 # Installer les dépendances Python
 pip3 install -r requirements.txt
