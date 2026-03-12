@@ -75,6 +75,16 @@ def _execute_deploy_new(action: Dict[str, Any], kb: Dict[str, Any]) -> None:
 
     logger.info("DEPLOY_NEW: creating CT %d (%s) at %s", vmid, hostname, ip)
 
+    # Idempotence guard: if the container was already created (e.g. by a previous
+    # cycle that failed before the KB could be updated), skip creation and only
+    # ensure the KB and port-forwarding are consistent.
+    if proxmox.container_exists(node, vmid):
+        logger.info(
+            "DEPLOY_NEW: CT %d already exists — skipping creation, reconciling KB state", vmid
+        )
+        kb["ip_pool"]["allocated"].setdefault(ip, {"vmid": vmid, "service": hostname})
+        return
+
     success = proxmox.create_container(node, vmid, tmpl, hostname, ip, gateway, nameserver)
     if not success:
         logger.error("DEPLOY_NEW: container CT %d creation failed", vmid)

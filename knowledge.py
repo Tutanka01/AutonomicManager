@@ -49,6 +49,19 @@ def load_kb(path: str) -> Dict[str, Any]:
     ip_pool = kb.setdefault("ip_pool", {})
     ip_pool.setdefault("allocated", {})
 
+    # Pre-seed the allocated pool with static IPs declared in desired_state so
+    # that the scaling/quarantine allocators never hand out a service IP.
+    allocated: Dict[str, Any] = ip_pool["allocated"]
+    for svc in kb.get("desired_state", {}).get("services", []):
+        static_ip: Optional[str] = svc.get("ip")
+        if static_ip and static_ip not in allocated:
+            allocated[static_ip] = {
+                "vmid": svc.get("vmid"),
+                "service": svc.get("name", ""),
+                "static": True,
+            }
+            logger.debug("Pre-seeded static IP %s for service '%s'", static_ip, svc.get("name", ""))
+
     logger.debug("Knowledge base loaded successfully")
     return kb
 

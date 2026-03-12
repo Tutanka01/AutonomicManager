@@ -228,9 +228,17 @@ def exec_in_container(node: str, vmid: int, command: str) -> Optional[str]:
 
 
 def container_exists(node: str, vmid: int) -> bool:
-    """Return True if the given VMID exists on the node."""
+    """Return True if the given VMID exists on the node.
+
+    Uses ``pct status`` as the primary check: it works locally without
+    depending on a successful pvesh/API call and returns exit code 0 when
+    the container exists (running *or* stopped) and non-zero when it does not.
+    Falls back to list_containers only when pct itself is unavailable.
+    """
+    result = _run(["pct", "status", str(vmid)])
+    if result is not None:
+        return result.returncode == 0
+    # pct unavailable — fall back to pvesh list
+    logger.warning("container_exists: pct status unavailable, falling back to list_containers for CT %s", vmid)
     containers = list_containers(node)
-    for ct in containers:
-        if int(ct.get("vmid", -1)) == int(vmid):
-            return True
-    return False
+    return any(int(ct.get("vmid", -1)) == int(vmid) for ct in containers)

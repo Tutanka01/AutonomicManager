@@ -1,5 +1,5 @@
 global:
-  node_name: "pve"
+  node_name: "pxmx-1"
   check_interval: 15
   bridge_internal: "vmbr1"
   bridge_external: "vmbr0"

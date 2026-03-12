@@ -45,9 +45,9 @@ pveam update
 pveam available --section turnkeylinux
 
 # Télécharger les templates utilisés dans knowledge.yaml
-pveam download local turnkey-wordpress-18.0-bookworm-amd64.tar.gz
-pveam download local turnkey-nginx-18.0-bookworm-amd64.tar.gz
-pveam download local turnkey-mysql-18.0-bookworm-amd64.tar.gz
+pveam download local debian-12-turnkey-wordpress_18.2-1_amd64.tar.gz
+pveam download local debian-12-turnkey-nginx-php-fastcgi_18.0-1_amd64.tar.gz
+pveam download local debian-12-turnkey-mysql_18.1-1_amd64.tar.gz
 
 # Vérifier qu'ils sont bien présents
 pveam list local
@@ -56,9 +56,9 @@ pveam list local
 Résultat attendu :
 ```
 NAME                                                         SIZE
-local:vztmpl/turnkey-wordpress-18.0-bookworm-amd64.tar.gz   350.00 MiB
-local:vztmpl/turnkey-nginx-18.0-bookworm-amd64.tar.gz        247.00 MiB
-local:vztmpl/turnkey-mysql-18.0-bookworm-amd64.tar.gz        288.00 MiB
+local:vztmpl/debian-12-turnkey-mysql_18.1-1_amd64.tar.gz     267.84MB
+local:vztmpl/debian-12-turnkey-nginx-php-fastcgi_18.0-1_amd64.tar.gz 275.22MB
+local:vztmpl/debian-12-turnkey-wordpress_18.2-1_amd64.tar.gz 346.78MB
 ```
 
 ---
@@ -162,7 +162,7 @@ global:
 templates:
   wordpress:
     # Vérifier que ce path correspond exactement au nom du template téléchargé :
-    file: "local:vztmpl/turnkey-wordpress-18.0-bookworm-amd64.tar.gz"
+    file: "local:vztmpl/debian-12-turnkey-wordpress_18.2-1_amd64.tar.gz"
     disk: "local-lvm:4"      # ← adapter si vous n'avez pas local-lvm
 
 desired_state:
