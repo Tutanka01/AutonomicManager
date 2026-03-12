@@ -247,13 +247,36 @@ def stop_container(node: str, vmid: int) -> bool:
     return True
 
 
+def _wait_until_stopped(vmid: int, timeout: int = 30, poll: float = 1.0) -> bool:
+    """Poll ``pct status`` until the container is stopped or *timeout* expires.
+
+    Returns True when the container is confirmed stopped/absent.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = _run(["pct", "status", str(vmid)])
+        if result is None or result.returncode != 0:
+            # pct returns non-zero when the CT doesn't exist either — both mean
+            # we can safely call destroy.
+            return True
+        if "stopped" in result.stdout.lower():
+            return True
+        time.sleep(poll)
+    logger.warning("CT %s did not stop within %ds", vmid, timeout)
+    return False
+
+
 def destroy_container(node: str, vmid: int) -> bool:
     """Force-stop and purge-destroy a container. Returns True on success."""
-    # Attempt to stop first; ignore errors (container may already be stopped)
     stop_cmd = ["pct", "stop", str(vmid), "--force"]
     logger.info("Stopping CT %s before destroy", vmid)
     _run(stop_cmd)
-    time.sleep(2)
+
+    # Wait for the container to fully stop before calling destroy.
+    # pct stop --force is asynchronous; destroy fails if the CT is still running.
+    if not _wait_until_stopped(vmid):
+        logger.error("CT %s still running after stop — aborting destroy", vmid)
+        return False
 
     cmd = ["pct", "destroy", str(vmid), "--purge"]
     logger.info("Destroying CT %s (purge)", vmid)

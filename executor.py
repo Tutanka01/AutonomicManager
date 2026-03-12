@@ -44,7 +44,14 @@ def execute(actions: List[Dict[str, Any]], kb: Dict[str, Any]) -> None:
 
     for action in actions:
         action_name: str = action["action"]
-        vmid: int = int(action.get("vmid", action.get("new_vmid", 0)))
+        # Resolve the most meaningful VMID for logging depending on action type
+        vmid: int = int(
+            action.get("vmid")
+            or action.get("replica_vmid")
+            or action.get("new_vmid")
+            or action.get("parent_vmid")
+            or 0
+        )
         handler = _dispatch.get(action_name)
         if handler is None:
             logger.error("No executor handler for action '%s', skipping", action_name)
