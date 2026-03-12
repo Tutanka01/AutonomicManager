@@ -232,9 +232,9 @@ def start_container(node: str, vmid: int) -> bool:
 
 
 def stop_container(node: str, vmid: int) -> bool:
-    """Stop a running container (force). Returns True on success."""
-    cmd = ["pct", "stop", str(vmid), "--force"]
-    logger.info("Stopping CT %s (force)", vmid)
+    """Stop a running container. Returns True on success."""
+    cmd = ["pct", "stop", str(vmid)]
+    logger.info("Stopping CT %s", vmid)
     result = _run(cmd)
     if result is None or result.returncode != 0:
         logger.error(
@@ -267,16 +267,20 @@ def _wait_until_stopped(vmid: int, timeout: int = 30, poll: float = 1.0) -> bool
 
 
 def destroy_container(node: str, vmid: int) -> bool:
-    """Force-stop and purge-destroy a container. Returns True on success."""
-    stop_cmd = ["pct", "stop", str(vmid), "--force"]
+    """Stop and purge-destroy a container. Returns True on success."""
+    # pct stop sends SIGKILL to the container's init — no --force flag exists.
     logger.info("Stopping CT %s before destroy", vmid)
-    _run(stop_cmd)
+    _run(["pct", "stop", str(vmid)])
 
     # Wait for the container to fully stop before calling destroy.
-    # pct stop --force is asynchronous; destroy fails if the CT is still running.
+    # pct stop is asynchronous; destroy fails if the CT is still running.
     if not _wait_until_stopped(vmid):
-        logger.error("CT %s still running after stop — aborting destroy", vmid)
-        return False
+        # Last-resort hard kill via lxc-stop -k (bypasses pct entirely)
+        logger.warning("CT %s still running — trying lxc-stop -k as last resort", vmid)
+        _run(["lxc-stop", "-n", str(vmid), "-k"])
+        if not _wait_until_stopped(vmid, timeout=10):
+            logger.error("CT %s could not be stopped — aborting destroy", vmid)
+            return False
 
     cmd = ["pct", "destroy", str(vmid), "--purge"]
     logger.info("Destroying CT %s (purge)", vmid)

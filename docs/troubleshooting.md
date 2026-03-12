@@ -126,9 +126,20 @@ Update `global.disk_storage` in `knowledge.yaml` to match (e.g., `local-lvm`, `l
 ### Cause B – VMID already taken
 ```bash
 pct list | grep <vmid>
-pvesh get /nodes/pve/lxc/<vmid>/status/current
 ```
 If occupied, either free it or raise `global.next_vmid` in `knowledge.yaml` to skip above the conflict.
+
+### Cause C – Wrong `node_name` in knowledge.yaml
+```
+[ERROR] [proxmox] list_containers failed (node=pve): hostname lookup 'pve' failed
+```
+The `node_name` must match the **exact Proxmox node name**, not `"pve"` which is the default placeholder.
+```bash
+# Get the real node name
+pvesh get /nodes --output-format json | python3 -c "import sys,json;[print(n['node']) for n in json.load(sys.stdin)]"
+# e.g. pxmx-1
+```
+Update `global.node_name` in `knowledge.yaml` accordingly. The manager hot-reloads this value at the next cycle without restart.
 
 ### Cause C – Template file missing or wrong path
 ```bash
@@ -327,35 +338,49 @@ sysctl -w net.ipv4.conf.all.route_localnet=1
 ## 8. CPU Metric Seems Wrong
 
 ### Symptoms
-CPU reads always 0, or reads values > 100%, or triggers HIGH_CPU_SUSTAINED spuriously.
+CPU reads always 0% à chaque cycle, ou les évènements `HIGH_CPU_SUSTAINED` ne se déclenchent jamais même lors d'un stress test.
 
-### Explanation
-Proxmox VE `pvesh get /nodes/<node>/lxc/<vmid>/status/current` returns a `cpu` field as a **ratio** (0.0 to 1.0 × number of cores). The manager converts it via:
+### Explication
+Le manager mesure le CPU via les **cgroups Linux** du host, en calculant un delta entre deux lectures successives :
 
-```python
-cpu_raw = status.get("cpu", 0)
-cores   = max(1, status.get("cpus", 1))
-cpu_pct = cpu_raw / cores * 100   # normalize to 0–100%
+- Cgroup v2 (Proxmox 8) : `/sys/fs/cgroup/lxc/{vmid}/cpu.stat` → champ `usage_usec`
+- Cgroup v1 (Proxmox 7) : `/sys/fs/cgroup/cpuacct/lxc/{vmid}/cpuacct.usage`
+
+Si ces fichiers sont inaccessibles, repli sur `pvesh get .../status/current` dont la valeur `cpu` est maintenue par `pvestatd` (cachée, souvent à `0.0`).
+
+**Le premier cycle retourne toujours `0.0`** (pas encore de delta) — la mesure est précise dès le deuxième cycle.
+
+### Diagnostic
+```bash
+# Vérifier que les fichiers cgroup sont accessibles depuis le host
+ls /sys/fs/cgroup/lxc/101/
+# doit contenir : cpu.stat (cgroup v2) ou n'être pas là (cgroup v1)
+
+ls /sys/fs/cgroup/cpuacct/lxc/101/
+# doit contenir : cpuacct.usage (cgroup v1)
+
+# Lire la valeur brute
+cat /sys/fs/cgroup/lxc/101/cpu.stat | grep usage_usec
+# ou
+cat /sys/fs/cgroup/cpuacct/lxc/101/cpuacct.usage
+
+# Vérifier que la valeur augmente pendant un stress
+pct exec 101 -- stress-ng --cpu 1 --cpu-load 80 --timeout 30s &
+watch -n 2 'cat /sys/fs/cgroup/lxc/101/cpu.stat | grep usage_usec'
 ```
 
-If `cpus` is returned as 0 (bug in Proxmox version), `max(1, ...)` prevents division by zero.
-
-### Diagnosis
+### Fix — si les fichiers cgroup sont absents
+Sur Proxmox 8, vérifier que le sous-système cgroup est monté :
 ```bash
-pvesh get /nodes/pve/lxc/101/status/current | python3 -c "
-import sys, json
-s = json.load(sys.stdin)
-print('cpu raw:', s.get('cpu'))
-print('cpus:   ', s.get('cpus'))
-print('calc %: ', s.get('cpu', 0) / max(1, s.get('cpus', 1)) * 100)
-"
+cat /proc/mounts | grep cgroup
+# doit montrer : cgroup2 /sys/fs/cgroup cgroup2 ...
 ```
+Si absent, un reboot du host Proxmox remet en place les mounts cgroup.
 
-### Fix
-If Proxmox returns incorrect `cpus` value, override the cores count in the container:
+### Fix — valeur pvesh toujours à 0
+Le daemon `pvestatd` met en cache le CPU et peut retourner `0.0` si interrogé trop fréquemment. Ce cas est géré automatiquement par la mesure cgroups. Si `pvestatd` est suspect :
 ```bash
-pct config 101 | grep cores
-pct set 101 --cores 2
+systemctl restart pvestatd
 ```
 
 ---

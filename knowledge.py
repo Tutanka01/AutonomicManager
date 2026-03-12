@@ -66,6 +66,46 @@ def load_kb(path: str) -> Dict[str, Any]:
     return kb
 
 
+# Keys that are purely static config — safe to hot-reload from disk each cycle.
+_STATIC_KEYS = ("global", "thresholds", "templates", "desired_state", "ip_pool")
+
+
+def reload_static_config(kb: Dict[str, Any], path: str) -> None:
+    """Re-read static configuration keys from *path* into the live *kb* dict.
+
+    Only the keys that an operator might legitimately change while the manager
+    is running (thresholds, desired_state, global settings …) are updated.
+    The runtime_state, active_port_forwarding, and port counter are left
+    untouched so in-progress operations are not disrupted.
+
+    Silently skips the reload if the file cannot be parsed (keeps previous
+    values so the manager keeps running with stale but valid config).
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            fresh: Dict[str, Any] = yaml.safe_load(fh) or {}
+    except (FileNotFoundError, yaml.YAMLError) as exc:
+        logger.warning("reload_static_config: could not read %s (%s) — keeping previous config", path, exc)
+        return
+
+    changed_keys = []
+    for key in _STATIC_KEYS:
+        if key in fresh and fresh[key] != kb.get(key):
+            kb[key] = fresh[key]
+            changed_keys.append(key)
+
+    if changed_keys:
+        logger.info("Config hot-reloaded from disk: %s", ", ".join(changed_keys))
+        # Re-seed static IPs in case desired_state changed
+        allocated: Dict[str, Any] = kb["ip_pool"].setdefault("allocated", {})
+        for svc in kb.get("desired_state", {}).get("services", []):
+            static_ip = svc.get("ip")
+            if static_ip and static_ip not in allocated:
+                allocated[static_ip] = {"vmid": svc.get("vmid"), "service": svc.get("name", ""), "static": True}
+    else:
+        logger.debug("reload_static_config: no changes detected")
+
+
 def save_kb(kb: Dict[str, Any], path: str) -> None:
     """Atomically save the knowledge base to *path*.
 

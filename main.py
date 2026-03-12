@@ -13,7 +13,7 @@ import time
 
 from analyzer import analyze
 from executor import execute
-from knowledge import load_kb, save_kb
+from knowledge import load_kb, save_kb, reload_static_config
 from monitor import monitor
 from planner import plan
 from utils import setup_logging
@@ -38,6 +38,15 @@ def main() -> None:
     while True:
         cycle += 1
         logger.info("=== Cycle MAPE-K #%d ===", cycle)
+
+        # ------------------------------------------------------------------
+        # 0. KNOWLEDGE — hot-reload static config (thresholds, desired_state …)
+        #    so the operator can edit knowledge.yaml without restarting.
+        # ------------------------------------------------------------------
+        try:
+            reload_static_config(kb, _KB_PATH)
+        except Exception as exc:
+            logger.error("reload_static_config crashed: %s", exc)
 
         # ------------------------------------------------------------------
         # 1. MONITOR — collect state for all known containers
@@ -79,7 +88,13 @@ def main() -> None:
 
         # ------------------------------------------------------------------
         # 5. KNOWLEDGE — persist updated state
+        # Re-read static config one last time before saving so that any edit
+        # made by the operator *during* this cycle is not overwritten.
         # ------------------------------------------------------------------
+        try:
+            reload_static_config(kb, _KB_PATH)
+        except Exception as exc:
+            logger.error("reload_static_config (pre-save) crashed: %s", exc)
         try:
             save_kb(kb, _KB_PATH)
             logger.info("Knowledge base saved")

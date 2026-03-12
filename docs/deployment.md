@@ -156,7 +156,7 @@ nano /opt/autonomic-manager/knowledge.yaml
 
 ```yaml
 global:
-  node_name: "pve"           # ← vérifier avec: pvesh get /nodes | grep node
+  node_name: "pxmx-1"       # ← vérifier avec: pvesh get /nodes | python3 -c "import sys,json;[print(n['node']) for n in json.load(sys.stdin)]"
   bridge_external: "vmbr0"   # ← vérifier avec: ip route show default
 
 templates:
@@ -202,10 +202,10 @@ python3 main.py
 
 ```
 2026-03-08 10:00:00 [INFO] [main] Autonomic MAPE-K Manager starting
-2026-03-08 10:00:00 [INFO] [main] Knowledge base loaded — node=pve, interval=15s
+2026-03-08 10:00:00 [INFO] [main] Knowledge base loaded — node=pxmx-1, interval=15s
 2026-03-08 10:00:00 [INFO] [main] === Cycle MAPE-K #1 ===
 2026-03-08 10:00:00 [INFO] [monitor] 1 container(s) to monitor
-2026-03-08 10:00:00 [WARNING] [monitor] CT 101 does not exist on node pve
+2026-03-08 10:00:00 [WARNING] [monitor] CT 101 does not exist on node pxmx-1
 2026-03-08 10:00:00 [WARNING] [analyzer] Event: MISSING_SERVICE (vmid=101, property=self-configuration)
 2026-03-08 10:00:00 [INFO] [planner] Planned action DEPLOY_NEW for CT 101 (priority=2)
 2026-03-08 10:00:00 [INFO] [executor] Executing DEPLOY_NEW for CT 101
@@ -464,13 +464,19 @@ Au prochain cycle, le manager crée CT 102 automatiquement.
 
 ### Modifier les seuils de scaling à chaud
 
-Le fichier `knowledge.yaml` est relu par le manager depuis la KB chargée en mémoire. Pour changer les seuils **sans redémarrer** :
+Le manager **relit automatiquement** `knowledge.yaml` au début et à la fin de chaque cycle sans qu'il soit nécessaire de le redémarrer. Les modifications suivantes sont prises en compte immédiatement :
 
-1. Modifier les valeurs dans `knowledge.yaml`
-2. Arrêter le manager : `systemctl stop autonomic-manager`
-3. Relancer : `systemctl start autonomic-manager`
+- `thresholds` — tous les seuils (CPU, restarts, quarantaine…)
+- `global` — `check_interval`, `node_name`, bridges
+- `desired_state` — ajout ou suppression de services
+- `templates` — définitions des templates LXC
 
-La KB est rechargée au démarrage.
+Il suffit d'éditer le fichier et de le sauvegarder. Au prochain cycle le manager logge :
+```
+[INFO] [knowledge] Config hot-reloaded from disk: thresholds
+```
+
+> **Note :** `runtime_state`, `active_port_forwarding` et les compteurs de ports ne sont jamais écrasés par le hot-reload — l'état courant en mémoire est toujours préservé.
 
 ### Surveiller les logs
 

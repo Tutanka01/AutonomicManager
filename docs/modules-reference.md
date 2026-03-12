@@ -61,7 +61,14 @@ status = get_container_status("pve", 101)
 # }
 ```
 
-**Calcul CPU** : Proxmox retourne `cpu` comme un ratio `0.0 – N.0` (N = nombre de cores). La conversion en % est : `cpu_raw / cores * 100`.
+**Calcul CPU** : le manager utilise en priorité une **mesure directe via les cgroups Linux** du host, plus précise que la valeur `pvesh` :
+
+- Cgroup v2 (Proxmox 8 / Bookworm) : `/sys/fs/cgroup/lxc/{vmid}/cpu.stat` → champ `usage_usec`
+- Cgroup v1 (Proxmox 7) : `/sys/fs/cgroup/cpuacct/lxc/{vmid}/cpuacct.usage`
+
+La méthode calcule un **delta entre deux lectures successives** (`Δns / Δt × 100`), évitant le problème de cache de `pvestatd`. Si les fichiers cgroup sont inaccessibles, repli sur la formule `pvesh` : `cpu_raw / cores * 100`.
+
+Le premier cycle retourne `0.0` (pas encore de delta) — la mesure est effective dès le deuxième cycle.
 
 ### `create_container(node, vmid, template_conf, hostname, ip, gateway, nameserver) -> bool`
 ```python
@@ -82,10 +89,18 @@ Timeout subprocess = 120s (création peut être lente si le template doit être 
 `pct start {vmid}` — démarre un conteneur arrêté.
 
 ### `stop_container(node, vmid) -> bool`
-`pct stop {vmid} --force` — arrêt brutal.
+`pct stop {vmid}` — arrêt propre du conteneur.
+
+> **Note :** Le flag `--force` n'existe pas dans `pct`. L'arrêt est asynchrone ; utiliser `destroy_container` si l'on a besoin d'attendre la confirmation d'arrêt.
 
 ### `destroy_container(node, vmid) -> bool`
-Séquence : `pct stop --force` (ignore erreurs) + 2s + `pct destroy --purge`. Le `--purge` supprime aussi les entrées dans la configuration Proxmox.
+Séquence robuste en trois étapes :
+1. `pct stop {vmid}` — demande d'arrêt
+2. Poll `pct status {vmid}` toutes les secondes pendant 30s maximum
+3. Si toujours actif après 30s : fallback `lxc-stop -n {vmid} -k` (SIGKILL direct sur le namespace), puis attente 10s supplémentaires
+4. Une fois arrêté confirmé : `pct destroy {vmid} --purge`
+
+Le `--purge` supprime aussi les entrées dans la configuration Proxmox.
 
 ### `set_container_network(node, vmid, ip, gateway) -> bool`
 ```python
@@ -102,7 +117,9 @@ out = exec_in_container("pve", 101, "sh -c ss -t state established | wc -l")
 Retourne `None` en cas d'erreur. La commande est passée via `command.split()`.
 
 ### `container_exists(node, vmid) -> bool`
-Appelle `list_containers` et cherche le VMID dans la liste. Pas d'appel API dédié.
+Utilise `pct status {vmid}` comme source primaire (retourne exit code 0 si le conteneur existe, running ou stopped). Repli sur `list_containers` uniquement si `pct` lui-même est indisponible.
+
+> Avantage : fonctionne même si `pvesh` échoue (API Proxmox injoignable, mauvais `node_name`…).
 
 ---
 
@@ -143,10 +160,15 @@ Supprime les deux règles DROP si elles existent.
 ```python
 kb = load_kb("knowledge.yaml")
 ```
-Charge le YAML et initialise les sous-clés manquantes avec des valeurs par défaut (`{}`, `[]`). Ne modifie pas le fichier sur disque.
+Charge le YAML et initialise les sous-clés manquantes avec des valeurs par défaut (`{}`, `[]`). **Pré-seme** également `ip_pool.allocated` avec les IPs statiques déclarées dans `desired_state.services`, garantissant que les allocateurs de scaling/quarantaine n'attribuent jamais une IP déjà réservée à un service. Ne modifie pas le fichier sur disque.
 
 ### `save_kb(kb, path) -> None`
-Écriture atomique : `tempfile.mkstemp` → `yaml.dump` → `os.replace`. Ne lève pas d'exception (loggue l'erreur et continue).
+Écriture atomique : `tempfile.mkstemp` → `yaml.dump` → `os.replace`. Ne lève pas d'exception (logge l'erreur et continue).
+
+### `reload_static_config(kb, path) -> None`
+Relit uniquement les clés **statiques** depuis le fichier (`global`, `thresholds`, `templates`, `desired_state`, `ip_pool`) et les fusionne dans le `kb` en mémoire. Le `runtime_state` et les compteurs ne sont jamais écrasés.
+
+Appelé automatiquement **deux fois par cycle** (début et juste avant `save_kb`) : toute modification de `knowledge.yaml` par l'opérateur est prise en compte au cycle suivant sans redémarrage. Si le fichier est invalide (YAML malformé), l'ancienne config est conservée et un warning est loggé.
 
 ### `allocate_ip(kb, pool="scaling") -> str | None`
 Cherche la première IP libre dans la plage `{pool}_range` de `ip_pool`. La marque comme allouée dans `ip_pool.allocated`. Retourne `None` si la plage est épuisée.
@@ -335,11 +357,13 @@ setup_logging()
 kb = load_kb("knowledge.yaml")
 
 while True:
+    reload_static_config(kb, "knowledge.yaml")  # hot-reload config opérateur
     observed = monitor(kb)
     events   = analyze(observed, kb)
     actions  = plan(events, kb)
     if actions:
         execute(actions, kb)
+    reload_static_config(kb, "knowledge.yaml")  # capture éditions faites pendant le cycle
     save_kb(kb, "knowledge.yaml")
     sleep(kb["global"]["check_interval"])   # défaut: 15s
 ```
