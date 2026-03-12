@@ -8,14 +8,82 @@ Errors are always caught; functions return False/None instead of raising.
 
 import json
 import logging
+import os
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Default subprocess timeout (seconds)
 _TIMEOUT = 30
+
+# ---------------------------------------------------------------------------
+# Cgroup-based CPU measurement (accurate delta sampling)
+# ---------------------------------------------------------------------------
+# Stores the last (monotonic_time, cpu_nanoseconds) sample per VMID so that
+# successive calls can compute a real delta without any added sleep.
+_cpu_samples: Dict[int, Tuple[float, int]] = {}
+
+
+def _read_cgroup_cpu_ns(vmid: int) -> Optional[int]:
+    """Read cumulative CPU usage in nanoseconds for *vmid* from cgroup files.
+
+    Supports cgroup v2 (Proxmox 8 / Bookworm) and cgroup v1 (Proxmox 7).
+    Returns nanoseconds of total CPU time consumed, or None if unavailable.
+    """
+    # cgroup v2 — /sys/fs/cgroup/lxc/<vmid>/cpu.stat → usage_usec
+    v2_stat = f"/sys/fs/cgroup/lxc/{vmid}/cpu.stat"
+    if os.path.exists(v2_stat):
+        try:
+            with open(v2_stat) as fh:
+                for line in fh:
+                    if line.startswith("usage_usec"):
+                        return int(line.split()[1]) * 1_000  # µs → ns
+        except (OSError, ValueError):
+            pass
+
+    # cgroup v1 — /sys/fs/cgroup/cpuacct/lxc/<vmid>/cpuacct.usage (already in ns)
+    v1_usage = f"/sys/fs/cgroup/cpuacct/lxc/{vmid}/cpuacct.usage"
+    if os.path.exists(v1_usage):
+        try:
+            with open(v1_usage) as fh:
+                return int(fh.read().strip())
+        except (OSError, ValueError):
+            pass
+
+    return None
+
+
+def _cgroup_cpu_percent(vmid: int) -> Optional[float]:
+    """Return CPU usage % since the last call by diffing cgroup cumulative counters.
+
+    Returns None when cgroup data is unavailable (falls back to pvesh value).
+    Returns 0.0 on the very first call for a given VMID (no previous sample).
+    """
+    now = time.monotonic()
+    cpu_ns = _read_cgroup_cpu_ns(vmid)
+    if cpu_ns is None:
+        return None
+
+    prev = _cpu_samples.get(vmid)
+    _cpu_samples[vmid] = (now, cpu_ns)
+
+    if prev is None:
+        return 0.0  # first observation — no delta yet
+
+    prev_time, prev_ns = prev
+    elapsed_s = now - prev_time
+    if elapsed_s < 0.1:
+        return 0.0  # samples too close together — unreliable
+
+    cpu_delta_ns = cpu_ns - prev_ns
+    if cpu_delta_ns < 0:
+        # Counter was reset (container restarted)
+        return 0.0
+
+    cpu_percent = (cpu_delta_ns / (elapsed_s * 1e9)) * 100.0
+    return round(min(cpu_percent, 100.0), 1)
 
 
 def _run(cmd: List[str], timeout: int = _TIMEOUT) -> Optional[subprocess.CompletedProcess]:
@@ -71,10 +139,17 @@ def get_container_status(node: str, vmid: int) -> Optional[Dict[str, Any]]:
         logger.error("get_container_status: JSON parse error for vmid=%s: %s", vmid, exc)
         return None
 
-    # cpu is a ratio relative to the number of allocated cores
-    cpu_raw: float = float(raw.get("cpu", 0.0))
-    cores: int = int(raw.get("cpus", raw.get("maxcpu", 1)) or 1)
-    cpu_percent: float = (cpu_raw / cores) * 100.0
+    # Try cgroup-based CPU measurement first: it performs a delta between two
+    # successive readings so it is accurate regardless of pvestatd caching.
+    # Falls back to the pvesh 'cpu' field if cgroup files are not accessible.
+    cgroup_cpu = _cgroup_cpu_percent(vmid)
+    if cgroup_cpu is not None:
+        cpu_percent: float = cgroup_cpu
+    else:
+        # pvesh fallback: cpu is a ratio in [0..1] relative to allocated cores
+        cpu_raw: float = float(raw.get("cpu", 0.0))
+        cores: int = int(raw.get("cpus", raw.get("maxcpu", 1)) or 1)
+        cpu_percent = (cpu_raw / cores) * 100.0
 
     mem: int = int(raw.get("mem", 0))
     maxmem: int = int(raw.get("maxmem", 1) or 1)
